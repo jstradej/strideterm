@@ -895,7 +895,11 @@ export class MobileManager extends EventEmitter {
   /** Updates a device's capability and/or profile allowlist (plan §10.5). Re-validated on every command anyway (mobile-command-dispatch.ts) — this only changes what's ALLOWED going forward. */
   async updateDeviceAllowlist(
     deviceId: string,
-    update: { capabilities?: Capability[]; profileAllowlist?: string[]; excludedProfileIds?: string[] },
+    update: {
+      capabilities?: Capability[];
+      profileAllowlist?: string[];
+      excludedProfileIds?: string[];
+    },
   ): Promise<void> {
     const profileIds = this.getProfileIds?.();
     const exclusions =

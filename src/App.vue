@@ -162,7 +162,7 @@
       <div class="sidebar-resize-handle" data-role="sidebar-resize-handle"></div>
     </aside>
 
-    <main class="workspace">
+    <main class="workspace" :class="{ 'workspace--usage-status-bar': showUsageStatusBar }">
       <section class="workspace-main" :class="{ 'workspace-main--grid': store.isGridVisible }">
         <WorkspaceHero />
 
@@ -306,11 +306,15 @@
              to the visible area when the keyboard opens. -->
         <MobileInputBar />
       </section>
+      <UsageStatusBar v-if="showUsageStatusBar" @open="openUsage" />
     </main>
 
     <!-- Notification center — direct child of .frame so pinned mode can
          occupy the 3rd grid column. Unpinned mode uses position: fixed. -->
-    <NotificationCenter />
+    <NotificationCenter
+      :usage-status-bar-visible="usageStatusBarVisible"
+      @usage-status-bar-visibility="setUsageStatusBarVisible"
+    />
   </div>
 
   <ReviewPrActionApprovals
@@ -385,7 +389,13 @@ import { useAttentionSync } from "./composables/useAttentionSync.js";
 import { useKeyboardShortcuts } from "./composables/useKeyboardShortcuts.js";
 import { useSidebarResize } from "./composables/useSidebarResize.js";
 import { useNotificationDockResize } from "./composables/useNotificationDockResize.js";
-import { writeSidebarCollapsed, readSidebarWidth, readNotificationDockWidth } from "./app/helpers.js";
+import {
+  writeSidebarCollapsed,
+  readSidebarWidth,
+  readNotificationDockWidth,
+  readUsageStatusBarVisible,
+  writeUsageStatusBarVisible,
+} from "./app/helpers.js";
 import ProfileBar from "./components/layout/ProfileBar.vue";
 import SidebarPanel from "./components/layout/SidebarPanel.vue";
 import TabStrip from "./components/layout/TabStrip.vue";
@@ -406,6 +416,7 @@ import ContextMenu from "./components/layout/ContextMenu.vue";
 import LayoutPicker from "./components/layout/LayoutPicker.vue";
 import TabPickerDropdown from "./components/layout/TabPickerDropdown.vue";
 import NotificationCenter from "./components/layout/NotificationCenter.vue";
+import UsageStatusBar from "./components/layout/UsageStatusBar.vue";
 import ReviewPrActionApprovals from "./components/layout/ReviewPrActionApprovals.vue";
 import NotificationToast from "./components/layout/NotificationToast.vue";
 import PersistentToastStack from "./components/layout/PersistentToastStack.vue";
@@ -469,6 +480,18 @@ if (reviewCommentRequest) {
 }
 
 const notifStore = useNotificationStore();
+const usageStatusBarVisible = ref(readUsageStatusBarVisible());
+const showUsageStatusBar = computed(() => usageStatusBarVisible.value && typeof api?.readAgentUsage === "function");
+
+function setUsageStatusBarVisible(value: boolean): void {
+  usageStatusBarVisible.value = value;
+  writeUsageStatusBarVisible(value);
+}
+
+function openUsage(): void {
+  notifStore.openPanelOnTab("usage");
+  notifStore.requestFocus();
+}
 const sshStore = useSshStore();
 const { latestToast } = useNotificationCapture(api as Transport | null);
 useReviewNotifications(latestToast);

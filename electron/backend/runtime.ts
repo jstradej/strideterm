@@ -399,11 +399,16 @@ import type { Logger } from "./logger.js";
 import { createRuntimeAttentionManager } from "./runtime-attention.js";
 import type {
   AppState,
+  PanelState,
   SidebarNoteRecord,
   WindowSlot,
   WindowSlotBounds,
   WorkspaceState,
 } from "../shared/types/state.js";
+import { createGeminiUsageObserver } from "./agent-usage/gemini.js";
+import { createUsageAccountStore } from "./agent-usage/account-store.js";
+import { createAgentUsageReader } from "./agent-usage/read.js";
+import { readGeminiKnownAccounts } from "./agent-usage/gemini-accounts.js";
 import { carryOverSourceBaseline, prePrSourceIdentityKey } from "../shared/review-source-identity.js";
 import { reviewAgentPreparationStopSchema } from "./ipc-schemas.js";
 import type { ReviewGitStart, StartReviewAgentPreparation, ReviewPrActionConfirm } from "./ipc-schemas.js";
@@ -752,6 +757,17 @@ function jiraMcpWorkspaceSupported(workspace: Pick<WorkspaceState, "kind" | "rev
     !["docker", "azure", "github"].includes(String(workspace.kind)) &&
     ((!workspace.review && !workspace.quickfix) || workspace.kind === "terminal" || workspace.kind === "task")
   );
+}
+
+type LocalUsageSession = { kind?: string; wslDistro?: string | null; sshHostId?: string | null };
+
+function isVerifiedLocalGeminiPanel(panel: PanelState | null, session: LocalUsageSession | undefined): boolean {
+  if (!panel || !session || session.kind === "ssh" || session.wslDistro || session.sshHostId) return false;
+  const launch = panel.launch;
+  if (launch?.kind === "ssh" || launch?.sshHostId || launch?.sshInline || launch?.remoteCwd) return false;
+  if (parseAgentCommand(panel.command)?.provider === "gemini") return true;
+  if (!launch || typeof launch.file !== "string") return false;
+  return parseAgentCommand(launch.file)?.provider === "gemini";
 }
 
 export async function createRuntime({
@@ -6557,6 +6573,9 @@ export async function createRuntime({
   // Per-session dedup for rate-limit alerts. The same banner can scroll
   // multiple times in the agent's output and we only want one alert per
   // window. Also covers redrawn TUIs (Claude's prompt-limit dialog repaints).
+  const geminiUsage = createGeminiUsageObserver();
+  const usageAccounts = createUsageAccountStore(userDataPath);
+  let readAccountUsage = createAgentUsageReader(usageAccounts);
   const lastRateLimitAlertAt = new Map<string, number>();
   const RATE_LIMIT_ALERT_DEDUP_MS = 60_000;
 
@@ -6583,6 +6602,17 @@ export async function createRuntime({
     const last = lastRateLimitAlertAt.get(sessionId) || 0;
     if (now - last < RATE_LIMIT_ALERT_DEDUP_MS) return;
     lastRateLimitAlertAt.set(sessionId, now);
+
+    if (match.providerHint === "gemini") {
+      const session = sessions.sessions.get(sessionId);
+      const descriptor = parseSessionId(sessionId);
+      const state = getState();
+      const workspace = descriptor ? findWorkspace(state, descriptor.workspaceId) : null;
+      const panel = workspace?.panels?.find((item: PanelState) => item.id === descriptor?.panelId) || null;
+      if (isVerifiedLocalGeminiPanel(panel, session)) {
+        geminiUsage.observeGeminiRateLimit(sessionId, now, match.resetAt?.getTime());
+      }
+    }
 
     const resetSuffix = match.resetAt ? `, resumes ${match.resetAt.toLocaleTimeString()}` : "";
     const detail = `rate-limited:${match.providerHint}${resetSuffix}`;
@@ -6787,9 +6817,11 @@ export async function createRuntime({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   sessions.on("terminal:spawned", (payload: any) => {
     if (isSshMcpSessionId(payload.sessionId)) return;
-    taskRunner.cancelPendingInput(String(payload.sessionId || ""));
-    codexTerminalNotifications.delete(String(payload.sessionId || ""));
-    clearTerminalReplay(String(payload.sessionId || ""));
+    const sessionId = String(payload.sessionId || "");
+    taskRunner.cancelPendingInput(sessionId);
+    geminiUsage.clearGeminiUsageObservation(sessionId);
+    codexTerminalNotifications.delete(sessionId);
+    clearTerminalReplay(sessionId);
     // The sandbox prepares asynchronously, after the broadcast that showed the tab; without a push of its own the
     // "isolated" badge (payload.attention.isolation) waited for an unrelated state change.
     if (payload.sandboxed === true) broadcastState();
@@ -6805,6 +6837,7 @@ export async function createRuntime({
     const sessionId = String(payload.sessionId || "");
     if (isSshMcpSessionId(sessionId)) return;
     retireSession(sessionId);
+    geminiUsage.clearGeminiUsageObservation(sessionId);
     codexTerminalNotifications.delete(sessionId);
     destroyTerminalReplay(sessionId);
     // A removed panel's attention alert has nothing left to point at. Workspace
@@ -6841,6 +6874,13 @@ export async function createRuntime({
     const panel = (project as any)?.panels?.find((item: any) => item.id === descriptor?.panelId) || null;
     const rawText = String(payload.data || "");
     const cleanText = rawText ? stripAnsi(rawText) : "";
+    if (
+      cleanText.includes("Resets:") &&
+      cleanText.includes("▬") &&
+      isVerifiedLocalGeminiPanel(panel, sessions.sessions.get(payload.sessionId))
+    ) {
+      geminiUsage.observeGeminiTerminalOutput(payload.sessionId, cleanText);
+    }
     // Assign the monotonic per-session sequence and stamp it on the payload
     // before re-emitting, so both the Electron IPC relay and the remote WS
     // relay forward an ordered stream. Remote clients use it to order replay
@@ -13064,6 +13104,17 @@ export async function createRuntime({
     getRemoteInfo() {
       return remoteInfo;
     },
+    readGeminiUsage: geminiUsage.readGeminiUsage,
+    usageAccounts,
+    invalidateUsageAccounts() {
+      readAccountUsage = createAgentUsageReader(usageAccounts);
+    },
+    async readAgentUsage(sessionId?: string, forceRefresh = false) {
+      const [accounts, listed] = await Promise.all([readAccountUsage(forceRefresh), readGeminiKnownAccounts()]);
+      // Gemini's metadata may describe a different login from the selected terminal.
+      const terminal = geminiUsage.readGeminiUsage(sessionId);
+      return [...accounts, listed.length ? { ...terminal, otherAccounts: listed } : terminal];
+    },
     listSidebarNotes(scope: SidebarNotesScope, windowId?: string): SidebarNotes {
       const state = getState();
       assertSidebarNotesScope(state, scope, windowId);
@@ -13293,10 +13344,11 @@ export async function createRuntime({
     },
 
     getMobileAttachmentContext(deviceId: string) {
+      const device = mobileDeviceStore.getDevice(deviceId);
       return {
         desktopDeviceId: mobileDeviceId,
         privateKey: mobileOwnKeyPair.privateKey,
-        device: mobileDeviceStore.getDevice(deviceId),
+        device: device ?? null,
       };
     },
 
@@ -13689,7 +13741,11 @@ export async function createRuntime({
 
     async updateMobileDeviceAllowlist(
       deviceId: string,
-      update: { capabilities?: string[]; profileAllowlist?: string[]; excludedProfileIds?: string[] },
+      update: {
+        capabilities?: string[];
+        profileAllowlist?: string[];
+        excludedProfileIds?: string[];
+      },
     ) {
       await mobileManager.updateDeviceAllowlist(deviceId, update);
       broadcastState();

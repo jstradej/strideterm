@@ -154,6 +154,7 @@ const MOBILE_ROUTE_CLASSIFICATION: Record<string, MobileRouteClass> = {
   "/api/tunnel/stop": "deny",
   "/api/approvals/audit-log": "own-check",
   "/api/approvals/audit-log/stats": "own-check",
+  "/api/agent-usage/read": "guarded",
   "/api/attachment/delete": "own-check",
   "/api/attachment/read": "deny",
   "/api/attachment/upload/begin": "deny",
@@ -660,6 +661,19 @@ describe("mobile session route policy", () => {
     expect(MOBILE_REQUIRED_CAPABILITIES[common.pathname]).toBe("review.start");
     expect(evaluateMobileRoute(common)).toMatchObject({ allow: false, reason: "capability-missing" });
     expect(evaluateMobileRoute({ ...common, capabilities: ["review.start"] })).toEqual({ allow: true });
+  });
+
+  test("provider usage requires the paired device status.read grant", () => {
+    const common = {
+      pathname: "/api/agent-usage/read",
+      body: {},
+      profileId: PROFILE,
+      workspaceProfile: (id: string) => WORKSPACES[id],
+      connectionProfile: (id: string) => CONNECTIONS[id],
+    };
+    expect(MOBILE_REQUIRED_CAPABILITIES[common.pathname]).toBe("status.read");
+    expect(evaluateMobileRoute(common)).toMatchObject({ allow: false, reason: "capability-missing" });
+    expect(evaluateMobileRoute({ ...common, capabilities: ["status.read"] })).toEqual({ allow: true });
   });
 
   test("routes that carry their own authorization are not judged by the body guard", () => {

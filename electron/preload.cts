@@ -555,6 +555,10 @@ contextBridge.exposeInMainWorld("strideterm", {
     ipcRenderer.send("terminal:input", sessionId, data, originWorkspaceId, pointerArrival),
   submitTerminal: (sessionId, text, originWorkspaceId) =>
     ipcRenderer.send("terminal:submit", sessionId, text, originWorkspaceId),
+  readAgentUsage: (sessionId, forceRefresh) => ipcRenderer.invoke("agent-usage:read", sessionId, forceRefresh),
+  addUsageAccountProfile: (provider, candidateId) =>
+    ipcRenderer.invoke("agent-usage:add-profile", provider, candidateId),
+  removeUsageAccountProfile: (id) => ipcRenderer.invoke("agent-usage:remove-profile", id),
   getPerformanceSnapshot: () => ipcRenderer.invoke("perf:get-snapshot"),
   captureRendererCpuProfile: () => ipcRenderer.invoke("perf:capture-cpu-profile"),
   revealCpuProfile: (filePath) => ipcRenderer.invoke("perf:reveal-cpu-profile", filePath),

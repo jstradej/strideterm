@@ -43,6 +43,8 @@ import {
 import { AttachmentPolicyError } from "./attachment-file-policy.js";
 import { deriveSessionKey, openEnvelope, publicKeyFromRaw, sealEnvelope } from "./mobile/mobile-crypto.js";
 import { decodeCanonicalPublicKey } from "./mobile/mobile-crypto.js";
+import { projectMobileAgentUsage } from "./agent-usage/mobile-projection.js";
+import type { AgentUsage } from "../shared/agent-usage.js";
 import {
   START_PULL_REQUEST_REVIEW_ROUTE,
   startPullRequestReviewSchema,
@@ -521,6 +523,8 @@ type AnyFn = (...args: any[]) => any;
  * The actual runtime object returned by createRuntime() satisfies this shape.
  */
 interface Runtime {
+  /** Shared quota snapshot; sessionId scopes terminal-observed Gemini data. */
+  readAgentUsage?(sessionId?: string, forceRefresh?: boolean): Promise<AgentUsage[]>;
   getWindowFocusedAt?: (windowId: string) => number | undefined;
   isPrivateSshOperationSessionId?: (sessionId: unknown) => boolean;
   isSshTestSessionId?: (sessionId: unknown) => boolean;
@@ -4563,7 +4567,11 @@ export async function startRemoteServer({
     if (classifyMobileRoute(pathname) === "own-check") return null;
     let body: Record<string, unknown>;
     try {
-      body = await readRequestBody(request);
+      const parsed: unknown = await readRequestBody(request);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return { status: 400, error: "invalid request body", reason: "invalid-body" };
+      }
+      body = parsed as Record<string, unknown>;
     } catch (err) {
       return { status: 400, error: (err as Error).message || "invalid request body", reason: "invalid-body" };
     }
@@ -4896,6 +4904,97 @@ export async function startRemoteServer({
             json(response, refusal.status, { error: refusal.error, reason: refusal.reason });
             return;
           }
+        }
+
+        if (request.method === "POST" && url.pathname === "/api/agent-usage/read") {
+          response.setHeader("Cache-Control", "no-store");
+          const mobileSession = apiSessionId ? activeSessions.get(apiSessionId) : undefined;
+          let body: Record<string, unknown>;
+          try {
+            body = await readRequestBody(request);
+          } catch {
+            json(response, 400, { error: "Invalid provider usage request." });
+            return;
+          }
+          if (!body || typeof body !== "object" || Array.isArray(body)) {
+            json(response, 400, { error: "Invalid provider usage request." });
+            return;
+          }
+          if (
+            Object.keys(body).some((key) => key !== "sessionId") ||
+            (Object.hasOwn(body, "sessionId") &&
+              (typeof body.sessionId !== "string" || !body.sessionId.trim() || body.sessionId.length > 512))
+          ) {
+            json(response, 400, { error: "Invalid provider usage request." });
+            return;
+          }
+          const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : undefined;
+          const isPhone = Boolean(mobileSession?.deviceId);
+          const profileId = (apiSessionId && registry.get(apiSessionId)?.profileId) || mobileSession?.profileId || "";
+
+          const accessRefusal = (): { error: string; reason: string } | undefined => {
+            let currentProfileId = profileId;
+            if (isPhone) {
+              const currentSession = apiSessionId ? activeSessions.get(apiSessionId) : undefined;
+              if (
+                !currentSession?.deviceId ||
+                !currentSession.pairId ||
+                currentSession.deviceId !== mobileSession?.deviceId ||
+                currentSession.pairId !== mobileSession?.pairId
+              ) {
+                return { error: "This paired phone session is no longer active.", reason: "paired-session-ended" };
+              }
+              currentProfileId = (apiSessionId && registry.get(apiSessionId)?.profileId) || currentSession.profileId;
+              if (
+                currentProfileId !== profileId ||
+                runtime.isMobileSessionStillAuthorized?.(currentSession.deviceId, currentProfileId) !== true
+              ) {
+                return {
+                  error: "This phone is no longer authorized for the active profile.",
+                  reason: "profile-authorization-changed",
+                };
+              }
+              const device = runtime.getMobileAttachmentContext?.(currentSession.deviceId)?.device;
+              if (!device || device.pairId !== currentSession.pairId || device.revoked) {
+                return { error: "This paired phone is no longer available.", reason: "paired-device-unavailable" };
+              }
+              if (!device.capabilities.includes("status.read")) {
+                return {
+                  error: "Provider usage requires the status.read permission for this phone.",
+                  reason: "capability-missing",
+                };
+              }
+            }
+            if (requestedSessionId && !targetBelongsToCaller(runtime, requestedSessionId, currentProfileId, true)) {
+              return {
+                error: "That Gemini session is outside the profile this client is using.",
+                reason: "target-outside-profile",
+              };
+            }
+            return undefined;
+          };
+
+          const initialRefusal = accessRefusal();
+          if (initialRefusal) {
+            json(response, 403, initialRefusal);
+            return;
+          }
+          if (!runtime.readAgentUsage) {
+            json(response, 503, { error: "Provider usage is unavailable on this host." });
+            return;
+          }
+          try {
+            const rows = await runtime.readAgentUsage(requestedSessionId, false);
+            const finalRefusal = accessRefusal();
+            if (finalRefusal) {
+              json(response, 403, finalRefusal);
+              return;
+            }
+            json(response, 200, projectMobileAgentUsage(Array.isArray(rows) ? rows : []));
+          } catch {
+            json(response, 500, { error: "Could not read provider usage." });
+          }
+          return;
         }
 
         // Upload and read for desktop-class callers. After the mobile gate on purpose: a phone has its own sealed

@@ -416,13 +416,13 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
-    padding: 4px 6px calc(4px + env(safe-area-inset-bottom));
+    padding: 4px 6px calc(4px + var(--composer-bottom-inset, env(safe-area-inset-bottom)));
     border-top: 1px solid var(--border);
     background: var(--panel);
   }
 
   .mobile-input-bar--collapsed {
-    padding: 0 0 env(safe-area-inset-bottom);
+    padding: 0 0 var(--composer-bottom-inset, env(safe-area-inset-bottom));
   }
 
   .mobile-input-bar__expand {
@@ -1331,7 +1331,7 @@ html.native-keyboard-viewport .mobile-input-bar.mobile-input-bar--landscape.mobi
     flex-direction: column;
     gap: 4px;
     min-width: 0;
-    padding: 4px 6px calc(4px + env(safe-area-inset-bottom));
+    padding: 4px 6px calc(4px + var(--composer-bottom-inset, env(safe-area-inset-bottom)));
     border-top: 1px solid var(--border);
     background: var(--panel);
     z-index: 20;

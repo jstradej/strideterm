@@ -1109,6 +1109,32 @@ describe("default state", () => {
       });
     });
 
+    test("a persisted device record that still carries the removed provider usage opt-in loads without it", () => {
+      const state = normalizeState({
+        settings: {
+          integrations: {
+            mobile: {
+              enabled: true,
+              devices: [
+                {
+                  deviceId: "dev-1",
+                  pairId: "pair-1",
+                  state: "active",
+                  capabilities: ["status.read"],
+                  shareProviderUsage: true,
+                },
+                { deviceId: "dev-2", pairId: "pair-2", state: "active", capabilities: [], shareProviderUsage: false },
+              ],
+            },
+          },
+        },
+      });
+      const devices = state.settings.integrations.mobile.devices;
+      expect(devices.map((device) => device.deviceId)).toEqual(["dev-1", "dev-2"]);
+      for (const device of devices) expect(device).not.toHaveProperty("shareProviderUsage");
+      expect(devices[0]?.capabilities).toEqual(["status.read"]);
+    });
+
     test("a persisted state that predates the relay backfills to off, even with mobile already on", () => {
       // An upgrade must not acquire a new outbound connection on the user's behalf. The mobile
       // integration being on says nothing about whether they want a relay.

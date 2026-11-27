@@ -33,6 +33,7 @@ import {
   setSidebarNoteColorSchema,
 } from "../shared/sidebar-notes.js";
 import { START_PIPELINE_AGENT_CHANNEL, startPipelineAgentSchema } from "../shared/pipeline-agent.js";
+import { discoverUsageProfiles } from "./agent-usage/discover-profiles.js";
 import { START_JIRA_DEVELOPMENT_CHANNEL, startJiraDevelopmentSchema } from "../shared/jira-development.js";
 import { withOperationPromise } from "./effect/runtime.js";
 import * as fm from "./file-manager.js";
@@ -863,6 +864,39 @@ export function registerIpc(
     return windowId;
   }
 
+  handle("agent-usage:read", (_event, sessionId: unknown, forceRefresh: unknown) =>
+    runtime.readAgentUsage(typeof sessionId === "string" ? sessionId : undefined, forceRefresh === true),
+  );
+  handle("agent-usage:add-profile", async (event, provider: unknown, candidateId: unknown) => {
+    if (provider !== "claude" && provider !== "codex") throw new Error("Unsupported account provider.");
+    let directory: string;
+    if (candidateId !== undefined) {
+      const candidates = await discoverUsageProfiles(runtime.usageAccounts.listProfiles());
+      const candidate = candidates.find((item) => item.id === candidateId && item.provider === provider);
+      if (!candidate) throw new Error("This profile folder is no longer available. Refresh Usage to check again.");
+      directory = candidate.directory;
+    } else {
+      const owner = BrowserWindow.fromWebContents(event.sender);
+      const options: Electron.OpenDialogOptions = {
+        title:
+          provider === "claude"
+            ? "Choose a signed-in Claude configuration folder"
+            : "Choose a signed-in Codex home folder",
+        properties: ["openDirectory", "showHiddenFiles"],
+      };
+      const picked = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
+      if (picked.canceled || !picked.filePaths[0]) return false;
+      directory = picked.filePaths[0];
+    }
+    runtime.usageAccounts.addProfile(provider, directory);
+    runtime.invalidateUsageAccounts();
+    return true;
+  });
+  handle("agent-usage:remove-profile", (_event, id: unknown) => {
+    if (typeof id !== "string" || !id || id.length > 256) throw new Error("Invalid usage account.");
+    runtime.usageAccounts.removeProfile(id);
+    runtime.invalidateUsageAccounts();
+  });
   handle("sidebar-notes:list", (event, scope) =>
     runtime.listSidebarNotes(
       validateIpc(sidebarNotesScopeSchema, scope, "sidebar-notes:list"),
@@ -2428,7 +2462,11 @@ export function registerIpc(
       "mobile:device:update-allowlist",
     );
     return withOperationPromise({ opId: "mobile:device:update-allowlist" }, () =>
-      runtime.updateMobileDeviceAllowlist(deviceId, { capabilities, profileAllowlist, excludedProfileIds }),
+      runtime.updateMobileDeviceAllowlist(deviceId, {
+        capabilities,
+        profileAllowlist,
+        excludedProfileIds,
+      }),
     );
   });
   handle("mobile:device:set-remote-ui-paused", async (_event, payload) => {

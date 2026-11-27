@@ -60,6 +60,12 @@ const { ipcMainMock, handleRegistry, onRegistry, removeHandlerCalls, removeAllLi
 // forwarding every call to the real logger, so other tests are unaffected.
 type LogCall = { level: string; label: string; message: string; meta?: Record<string, unknown> };
 const logCalls = vi.hoisted(() => [] as LogCall[]);
+const usageCandidateFixtures = vi.hoisted(() => ({
+  current: [] as Array<{ id: string; provider: "claude" | "codex"; directory: string; label: string }>,
+}));
+vi.mock("./agent-usage/discover-profiles.js", () => ({
+  discoverUsageProfiles: vi.fn(async () => usageCandidateFixtures.current),
+}));
 vi.mock("./logger.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./logger.js")>();
   return {
@@ -665,6 +671,211 @@ describe("registerIpc teardown", () => {
     expect(handleRegistry.has("state:get")).toBe(false);
     dispose();
     expect(removeHandlerCalls).not.toContain("state:get");
+  });
+});
+
+describe("agent usage profile IPC", () => {
+  beforeEach(() => {
+    resetIpcMainMock();
+    usageCandidateFixtures.current = [];
+  });
+
+  function makeUsageRuntime() {
+    const runtime = makeRuntimeStub();
+    runtime.readAgentUsage = vi.fn(async () => []);
+    runtime.invalidateUsageAccounts = vi.fn();
+    runtime.isPeerWindow = vi.fn(() => false);
+    runtime.usageAccounts = {
+      listProfiles: vi.fn(() => []),
+      addProfile: vi.fn(),
+      removeProfile: vi.fn(),
+      observe: vi.fn(),
+      history: vi.fn(() => []),
+    };
+    return runtime;
+  }
+
+  test("read delegates session identity and only accepts literal true for refresh", async () => {
+    const runtime = makeUsageRuntime();
+    const dispose = registerIpc(runtime, () => {});
+    const read = handleRegistry.get("agent-usage:read") as (
+      event: unknown,
+      sessionId: unknown,
+      force: unknown,
+    ) => Promise<unknown>;
+    try {
+      await expect(read({ sender: { id: 1 } }, "session-1", 1)).resolves.toEqual([]);
+      await expect(read({ sender: { id: 1 } }, {}, true)).resolves.toEqual([]);
+      expect(runtime.readAgentUsage).toHaveBeenNthCalledWith(1, "session-1", false);
+      expect(runtime.readAgentUsage).toHaveBeenNthCalledWith(2, undefined, true);
+      expect(runtime.readAgentUsage).toHaveBeenCalledTimes(2);
+    } finally {
+      dispose();
+    }
+  });
+
+  test("rejects invalid providers and stale or cross-provider candidates before mutation", async () => {
+    const runtime = makeUsageRuntime();
+    usageCandidateFixtures.current = [
+      { id: "candidate-a", provider: "codex", directory: "C:/private/codex", label: ".codex-team" },
+    ];
+    const dispose = registerIpc(runtime, () => {});
+    const add = handleRegistry.get("agent-usage:add-profile") as (
+      event: unknown,
+      provider: unknown,
+      candidate: unknown,
+    ) => Promise<unknown>;
+    try {
+      await expect(add({ sender: { id: 1 } }, "gemini", "candidate-a")).rejects.toThrow("Unsupported account provider");
+      await expect(add({ sender: { id: 1 } }, "claude", "candidate-a")).rejects.toThrow("no longer available");
+      await expect(add({ sender: { id: 1 } }, "codex", "stale-id")).rejects.toThrow("no longer available");
+      expect(runtime.usageAccounts.addProfile).not.toHaveBeenCalled();
+      expect(runtime.invalidateUsageAccounts).not.toHaveBeenCalled();
+    } finally {
+      dispose();
+    }
+  });
+
+  test("adds a validated candidate and refreshes the shared usage reader", async () => {
+    const runtime = makeUsageRuntime();
+    const candidate = {
+      id: "candidate-a",
+      provider: "claude" as const,
+      directory: "C:/private/claude",
+      label: ".claude-team",
+    };
+    usageCandidateFixtures.current = [candidate];
+    const dispose = registerIpc(runtime, () => {});
+    const add = handleRegistry.get("agent-usage:add-profile") as (
+      event: unknown,
+      provider: unknown,
+      candidate: unknown,
+    ) => Promise<unknown>;
+    try {
+      await expect(add({ sender: { id: 1 } }, "claude", candidate.id)).resolves.toBe(true);
+      expect(runtime.usageAccounts.addProfile).toHaveBeenCalledWith("claude", candidate.directory);
+      expect(runtime.invalidateUsageAccounts).toHaveBeenCalledOnce();
+    } finally {
+      dispose();
+    }
+  });
+
+  test("picker cancellation leaves the registry unchanged; remove validates and invalidates", async () => {
+    const { dialog } = await import("electron");
+    const runtime = makeUsageRuntime();
+    const dispose = registerIpc(runtime, () => {});
+    const add = handleRegistry.get("agent-usage:add-profile") as (
+      event: unknown,
+      provider: unknown,
+    ) => Promise<unknown>;
+    const remove = handleRegistry.get("agent-usage:remove-profile") as (event: unknown, id: unknown) => unknown;
+    try {
+      vi.mocked(dialog.showOpenDialog).mockResolvedValueOnce({ canceled: true, filePaths: [] });
+      await expect(add({ sender: { id: 1 } }, "codex")).resolves.toBe(false);
+      expect(runtime.usageAccounts.addProfile).not.toHaveBeenCalled();
+      expect(runtime.invalidateUsageAccounts).not.toHaveBeenCalled();
+
+      await expect(Promise.resolve(remove({ sender: { id: 1 } }, "profile-id"))).resolves.toBeUndefined();
+      expect(runtime.usageAccounts.removeProfile).toHaveBeenCalledWith("profile-id");
+      expect(runtime.invalidateUsageAccounts).toHaveBeenCalledOnce();
+      await expect(Promise.resolve(remove({ sender: { id: 1 } }, ""))).rejects.toThrow("Invalid usage account");
+      expect(runtime.usageAccounts.removeProfile).toHaveBeenCalledTimes(1);
+    } finally {
+      dispose();
+    }
+  });
+
+  test("native folder picker selection adds its chosen provider directory", async () => {
+    const { dialog } = await import("electron");
+    const runtime = makeUsageRuntime();
+    const selectedDirectory = "C:/private/chosen-codex";
+    const dispose = registerIpc(runtime, () => {});
+    const add = handleRegistry.get("agent-usage:add-profile") as (
+      event: unknown,
+      provider: unknown,
+    ) => Promise<unknown>;
+    try {
+      vi.mocked(dialog.showOpenDialog).mockResolvedValueOnce({ canceled: false, filePaths: [selectedDirectory] });
+      await expect(add({ sender: { id: 1 } }, "codex")).resolves.toBe(true);
+      expect(dialog.showOpenDialog).toHaveBeenCalledOnce();
+      expect(runtime.usageAccounts.addProfile).toHaveBeenCalledWith("codex", selectedDirectory);
+      expect(runtime.invalidateUsageAccounts).toHaveBeenCalledOnce();
+    } finally {
+      dispose();
+    }
+  });
+
+  test("profile persistence errors exposed to the renderer contain no filesystem path", async () => {
+    const runtime = makeUsageRuntime();
+    const candidate = {
+      id: "candidate-a",
+      provider: "codex" as const,
+      directory: "C:/private/codex",
+      label: ".codex-team",
+    };
+    usageCandidateFixtures.current = [candidate];
+    runtime.usageAccounts.addProfile = vi.fn(() => {
+      throw new Error("Could not save usage account settings.");
+    });
+    runtime.usageAccounts.removeProfile = vi.fn(() => {
+      throw new Error("Could not save usage account settings.");
+    });
+    const dispose = registerIpc(runtime, () => {});
+    const add = handleRegistry.get("agent-usage:add-profile") as (
+      event: unknown,
+      provider: unknown,
+      candidate: unknown,
+    ) => Promise<unknown>;
+    const remove = handleRegistry.get("agent-usage:remove-profile") as (
+      event: unknown,
+      id: unknown,
+    ) => Promise<unknown>;
+    try {
+      await expect(add({ sender: { id: 1 } }, "codex", candidate.id)).rejects.toThrow(
+        "Could not save usage account settings.",
+      );
+      await expect(remove({ sender: { id: 1 } }, "profile-id")).rejects.toThrow(
+        "Could not save usage account settings.",
+      );
+      expect(runtime.invalidateUsageAccounts).not.toHaveBeenCalled();
+
+      runtime.usageAccounts.addProfile = vi.fn(() => {
+        throw new Error("That directory has no existing configuration for this provider.");
+      });
+      await expect(add({ sender: { id: 1 } }, "codex", candidate.id)).rejects.toThrow(
+        "That directory has no existing configuration for this provider.",
+      );
+    } finally {
+      dispose();
+    }
+  });
+
+  test("peer windows cannot read or mutate local usage profiles", async () => {
+    const { dialog } = await import("electron");
+    const runtime = makeUsageRuntime();
+    runtime.isPeerWindow = vi.fn(() => true);
+    const dispose = registerIpc(runtime, () => {}, { getWindowIdByWebContentsId: () => "peer:remote" });
+    const event = { sender: { id: 44 } };
+    const read = handleRegistry.get("agent-usage:read") as (event: unknown) => Promise<unknown>;
+    const add = handleRegistry.get("agent-usage:add-profile") as (
+      event: unknown,
+      provider: unknown,
+    ) => Promise<unknown>;
+    const remove = handleRegistry.get("agent-usage:remove-profile") as (
+      event: unknown,
+      id: unknown,
+    ) => Promise<unknown>;
+    try {
+      await expect(read(event)).rejects.toThrow(PEER_WINDOW_REFUSED_MESSAGE);
+      await expect(add(event, "claude")).rejects.toThrow(PEER_WINDOW_REFUSED_MESSAGE);
+      await expect(remove(event, "profile-id")).rejects.toThrow(PEER_WINDOW_REFUSED_MESSAGE);
+      expect(runtime.readAgentUsage).not.toHaveBeenCalled();
+      expect(dialog.showOpenDialog).not.toHaveBeenCalled();
+      expect(runtime.usageAccounts.addProfile).not.toHaveBeenCalled();
+      expect(runtime.usageAccounts.removeProfile).not.toHaveBeenCalled();
+    } finally {
+      dispose();
+    }
   });
 });
 

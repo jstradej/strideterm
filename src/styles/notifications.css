@@ -390,6 +390,56 @@
   min-height: 0;
 }
 
+.notification-center__usage-pin {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 0 0 auto;
+  white-space: nowrap;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.notification-center__usage-pin input {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.notification-center--paired-usage .notification-center__header {
+  padding-block: 2px;
+}
+
+.notification-center--paired-usage :is(.notification-center__close, .notification-center__pin) {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+/* The paired phone opens Usage as a full landscape workspace. Scope this to the
+   active remote Usage tab so normal desktop and other phone tabs keep the dock. */
+@media (orientation: landscape) and (max-height: 500px) and (min-width: 600px) {
+  .notification-center--paired-usage {
+    left: 0;
+    right: 0;
+    width: 100vw;
+    max-width: 100vw;
+  }
+
+  .notification-center--paired-usage .notification-center__body--usage {
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  .notification-center--paired-usage .agent-usage__providers {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+  }
+}
+
 .notification-center__empty {
   padding: 40px 20px;
   text-align: center;
@@ -1323,6 +1373,21 @@
   cursor: pointer;
 }
 
+.notification-center__tabmenu-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.notification-center__tabmenu-icon {
+  display: inline-flex;
+  justify-content: center;
+  width: 16px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.notification-center__tabmenu-item--active .notification-center__tabmenu-icon {
+  color: var(--text);
+}
 .notification-center__tabmenu-item:hover {
   background: rgba(var(--tint), 0.08);
 }

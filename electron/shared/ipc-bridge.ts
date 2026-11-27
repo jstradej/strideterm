@@ -187,6 +187,7 @@ import type { SshAuthRequest, SshAuthPromptCancel, SshConnectionState } from "./
 import type { SshConnectionTestState, SshKey, SshKeyTransferState } from "./types/ssh.js";
 import type { SshRuntimeCapabilities } from "./ssh-connection.js";
 import type { PerformanceSnapshot, CpuProfileCaptureResult, RevealResult } from "./performance.js";
+import type { AgentUsage } from "./agent-usage.js";
 import type { AccountUiState } from "../backend/account/account-state.js";
 
 export type { StatePayload };
@@ -911,6 +912,10 @@ export interface StridetermAPI {
    */
   writeTerminal: (sessionId: string, data: string, originWorkspaceId?: string, pointerArrival?: string) => void;
   submitTerminal: (sessionId: string, text: string, originWorkspaceId?: string) => void;
+
+  readAgentUsage: (sessionId?: string, forceRefresh?: boolean) => Promise<AgentUsage[]>;
+  addUsageAccountProfile: (provider: "claude" | "codex", candidateId?: string) => Promise<boolean>;
+  removeUsageAccountProfile: (id: string) => Promise<void>;
 
   // Performance diagnostics (Electron-only; the remote transport does not
   // advertise these, so the Performance panel is hidden on remote clients).

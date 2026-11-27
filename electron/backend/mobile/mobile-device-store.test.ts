@@ -25,7 +25,7 @@ import {
   updateNotificationFeatures,
 } from "./mobile-device-store.js";
 import type { NewDeviceInput } from "./mobile-device-store.js";
-import type { MobileDeviceRecord } from "./mobile-schemas.js";
+import { MobileDeviceRecordSchema, type MobileDeviceRecord } from "./mobile-schemas.js";
 
 function newDeviceInput(deviceId: string, overrides: Partial<NewDeviceInput> = {}): NewDeviceInput {
   return {
@@ -267,6 +267,18 @@ describe("createMobileDeviceStore (stateful factory)", () => {
     await store.revokeDevice("dev-1", 4242);
     expect(store.listActiveDevices()).toHaveLength(0);
     expect(store.getDevice("dev-1")?.revokedAt).toBe(4242);
+  });
+});
+
+describe("persisted records from before provider usage was visible to every client", () => {
+  test("a leftover shareProviderUsage key is accepted and dropped on parse", () => {
+    const first = addDevice([], newDeviceInput("dev-1"));
+    if (!first.ok) throw new Error("expected ok");
+    for (const legacy of [true, false]) {
+      const parsed = MobileDeviceRecordSchema.parse({ ...first.device, shareProviderUsage: legacy });
+      expect(parsed).not.toHaveProperty("shareProviderUsage");
+      expect(parsed.deviceId).toBe("dev-1");
+    }
   });
 });
 

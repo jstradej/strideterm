@@ -312,6 +312,24 @@ export function writeSidebarCollapsed(value: boolean): void {
   }
 }
 
+const USAGE_STATUS_BAR_VISIBLE_KEY = "strideterm.usageStatusBarVisible";
+
+export function readUsageStatusBarVisible(): boolean {
+  try {
+    return window.localStorage.getItem(USAGE_STATUS_BAR_VISIBLE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function writeUsageStatusBarVisible(value: boolean): void {
+  try {
+    window.localStorage.setItem(USAGE_STATUS_BAR_VISIBLE_KEY, value ? "1" : "0");
+  } catch {
+    // Remembering the toggle is a convenience; the panel works without it.
+  }
+}
+
 export function readMobileInputBarCollapsed(): boolean {
   try {
     return window.localStorage.getItem("strideterm-mobile-input-collapsed") === "1";

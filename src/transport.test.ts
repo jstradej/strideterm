@@ -156,6 +156,29 @@ describe("remote transport endpoint routing", () => {
     });
   });
 
+  it("maps provider usage for the paired mobile host and exposes no account management", async () => {
+    (window as unknown as Record<string, unknown>).StridetermHost = {};
+    const transport = makeRemoteTransport() as unknown as Record<string, unknown>;
+    expect(typeof transport.readAgentUsage).toBe("function");
+    expect(transport.addUsageAccountProfile).toBeUndefined();
+    expect(transport.removeUsageAccountProfile).toBeUndefined();
+
+    await (transport.readAgentUsage as (sessionId?: string) => Promise<unknown>)("workspace:gemini-panel");
+    expect(capturedUrls.at(-1)).toBe("/api/agent-usage/read");
+    expect(capturedBodies.at(-1)).toEqual({ sessionId: "workspace:gemini-panel" });
+  });
+
+  it("maps provider usage for a browser guest without account management", async () => {
+    const transport = makeRemoteTransport() as unknown as Record<string, unknown>;
+    expect(typeof transport.readAgentUsage).toBe("function");
+    expect(transport.addUsageAccountProfile).toBeUndefined();
+    expect(transport.removeUsageAccountProfile).toBeUndefined();
+
+    await (transport.readAgentUsage as () => Promise<unknown>)();
+    expect(capturedUrls.at(-1)).toBe("/api/agent-usage/read");
+    expect(capturedBodies.at(-1)).toEqual({});
+  });
+
   it("preserves Jira cache and board filter options through remote API payloads", async () => {
     const transport = makeRemoteTransport();
     const boardPayload = {
@@ -2984,6 +3007,8 @@ describe("remote transport API parity — no method silently missing its remote 
     // remote-browser equivalent. The Performance panel is gated on the
     // transport advertising these, so it stays hidden on remote clients.
     "getPerformanceSnapshot",
+    "addUsageAccountProfile",
+    "removeUsageAccountProfile",
     "captureRendererCpuProfile",
     "revealCpuProfile",
     // Mobile pairing/device management (plan §10.5): Electron/desktop-only.
@@ -3100,6 +3125,7 @@ describe("remote transport API parity — no method silently missing its remote 
   }
 
   it("every desktop API key is either remote-mapped or an acknowledged desktop-only method", () => {
+    (window as unknown as Record<string, unknown>).StridetermHost = {};
     const desktopKeys = extractDesktopApiKeys();
     expect(desktopKeys.length).toBeGreaterThan(50); // sanity check the regex actually matched something
 
@@ -3111,6 +3137,7 @@ describe("remote transport API parity — no method silently missing its remote 
   });
 
   it("KNOWN_DESKTOP_ONLY_METHODS doesn't accumulate stale entries that are now mapped", () => {
+    (window as unknown as Record<string, unknown>).StridetermHost = {};
     const transport = makeRemoteTransport() as unknown as Record<string, unknown>;
     const remoteKeys = new Set(Object.keys(transport));
     const stale = [...KNOWN_DESKTOP_ONLY_METHODS].filter((key) => remoteKeys.has(key));

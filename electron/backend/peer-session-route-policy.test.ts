@@ -20,7 +20,12 @@ describe("peer route policy", () => {
   });
 
   test("ordinary routes are not denied", () => {
-    for (const route of ["/api/state", "/api/remote-client/profile/activate", "/api/claude-hook/status"]) {
+    for (const route of [
+      "/api/state",
+      "/api/remote-client/profile/activate",
+      "/api/claude-hook/status",
+      "/api/agent-usage/read",
+    ]) {
       expect(isPeerDeniedRoute(route), route).toBe(false);
     }
   });

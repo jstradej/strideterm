@@ -134,6 +134,7 @@ import {
 } from "../electron/shared/performance.js";
 import { rlog } from "./lib/renderer-log.js";
 import type { JiraSmartFilterId } from "../electron/shared/jira-smart-filters.js";
+import type { AgentUsage } from "../electron/shared/agent-usage.js";
 import {
   normalizeAttachmentList,
   parseAttachmentRead,
@@ -891,6 +892,14 @@ function bindElectronTransport(): Transport {
       parseOk(await electronAttachments.attachmentUploadCancel({ ...payload })),
     attachmentRead: async (payload) => parseAttachmentRead(await electronAttachments.attachmentRead({ ...payload })),
     onConnectionState: () => {},
+    readAgentUsage: window.strideterm.readAgentUsage
+      ? (sessionId, forceRefresh) =>
+          forceRefresh === undefined
+            ? window.strideterm.readAgentUsage(sessionId)
+            : window.strideterm.readAgentUsage(sessionId, forceRefresh)
+      : undefined,
+    addUsageAccountProfile: window.strideterm.addUsageAccountProfile,
+    removeUsageAccountProfile: window.strideterm.removeUsageAccountProfile,
     // Performance diagnostics: validate the main-process response at the IPC
     // boundary so a malformed snapshot surfaces as a controlled error instead
     // of a runtime crash deep in the panel's chart code.
@@ -3084,6 +3093,13 @@ export function createRemoteTransport(
       noteCoreRevision(state);
       return state;
     },
+    // Read-only for every remote viewer (browser, paired desktop, phone). Account management stays
+    // desktop-only and has no remote method.
+    readAgentUsage: async (sessionId?: string): Promise<AgentUsage[]> =>
+      (await fetchJson("/api/agent-usage/read", sessionId ? { sessionId } : {}, {
+        // A refusal (revoked phone, profile change) is shown by the Usage panel itself.
+        emitConnectionState: false,
+      })) as AgentUsage[],
     attachmentList: async (payload) => normalizeAttachmentList(await fetchJson("/api/attachment/list", payload)),
     attachmentDelete: async (payload) => {
       const result = await fetchJson("/api/attachment/delete", payload);

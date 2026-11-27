@@ -228,6 +228,10 @@
   grid-template-columns: minmax(0, 1fr);
 }
 
+.workspace.workspace--usage-status-bar {
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
 .meta,
 .project__meta small,
 .workspace-card__meta small,
@@ -3087,4 +3091,10 @@ a.workspace-card__jira-chip:hover {
 }
 .remote-access__header-actions {
   flex-wrap: wrap;
+}
+
+@media (pointer: coarse) {
+  .workspace--usage-status-bar {
+    --composer-bottom-inset: 0px;
+  }
 }

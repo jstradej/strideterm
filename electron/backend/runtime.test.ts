@@ -3987,6 +3987,37 @@ describe("runtime integration", () => {
     expect(fixture.runtime.getTerminalReplay("backend:shell")).toEqual({ data: "" });
   });
 
+  test("reports Gemini quota rows only for the local Gemini process that emitted them", async () => {
+    const panels = [
+      { id: "agent", title: "Gemini", command: "gemini" },
+      { id: "shell", title: "Shell", command: "echo gemini" },
+    ];
+    const fixture = await createFixture({
+      initialState: { workspaces: [{ id: "usage", name: "Usage", kind: "terminal", cwd: process.cwd(), panels }] },
+    });
+    fixtures.push(fixture);
+    for (const panel of panels) {
+      const sessionId = createSessionId("usage", panel.id);
+      fixture.sessionManager.sessions.set(sessionId, {
+        id: sessionId,
+        workspaceId: "usage",
+        panelId: panel.id,
+        kind: "terminal",
+        command: panel.command,
+        status: "running",
+      });
+      fixture.sessionManager.emit("terminal:data", {
+        sessionId,
+        data: "\x1b[32mFlash Lite  ▬▬▬▬▬▬▬▬▬  28%  Resets: 1:30 PM (1h)\x1b[0m\r\n",
+      });
+    }
+    const agent = createSessionId("usage", "agent");
+    expect(fixture.runtime.readGeminiUsage(agent).windows).toMatchObject([{ label: "Flash Lite", usedPercent: 28 }]);
+    expect(fixture.runtime.readGeminiUsage(createSessionId("usage", "shell")).windows).toEqual([]);
+    fixture.sessionManager.emit("terminal:spawned", { sessionId: agent });
+    expect(fixture.runtime.readGeminiUsage(agent).windows).toEqual([]);
+  });
+
   test("uses terminal output mode when submitting text through SessionManager", async () => {
     const fixture = await createFixture();
     fixtures.push(fixture);

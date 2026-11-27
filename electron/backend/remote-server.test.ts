@@ -1085,6 +1085,61 @@ describe("workspace delete endpoint validation", () => {
     "X-Strideterm-Client-Id": "test-client",
   });
 
+  test("a browser or paired-desktop client reads the sanitized provider usage, scoped to its profile", async () => {
+    const port = await getFreePort();
+    const auth = "test-token-usage-read";
+    const readAgentUsage = vi.fn(async () => [
+      {
+        provider: "claude",
+        checkedAt: 1000,
+        account: { label: "active@example.test", key: "host-secret-account-key" },
+        windows: [],
+        otherAccounts: [{ id: "profile-internal-id", label: "other@example.test", status: "separate-login" }],
+      },
+    ]);
+    const runtime = { ...makeMinimalRuntime(auth, port), readAgentUsage };
+    const server = await startRemoteServer({
+      runtime: runtime as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    const read = (body: unknown) =>
+      fetch(`http://127.0.0.1:${port}/api/agent-usage/read`, {
+        method: "POST",
+        headers: clientHeaders(auth),
+        body: JSON.stringify(body),
+      });
+    try {
+      const unauthenticated = await fetch(`http://127.0.0.1:${port}/api/agent-usage/read`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      expect(unauthenticated.status).toBe(401);
+
+      const ok = await read({});
+      expect(ok.status).toBe(200);
+      expect(ok.headers.get("cache-control")).toBe("no-store");
+      const serialized = JSON.stringify(await ok.json());
+      expect(serialized).toContain("other@example.test");
+      expect(serialized).not.toContain("host-secret-account-key");
+      expect(serialized).not.toContain("profile-internal-id");
+      expect(readAgentUsage).toHaveBeenCalledWith(undefined, false);
+
+      expect((await read({ sessionId: "ws-1:panel-1" })).status).toBe(200);
+      expect(readAgentUsage).toHaveBeenLastCalledWith("ws-1:panel-1", false);
+
+      readAgentUsage.mockClear();
+      const outside = await read({ sessionId: "ws-unknown:panel-1" });
+      expect(outside.status).toBe(403);
+      expect(await outside.json()).toMatchObject({ reason: "target-outside-profile" });
+      expect((await read({ extra: true })).status).toBe(400);
+      expect((await read({ sessionId: "" })).status).toBe(400);
+      expect(readAgentUsage).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
   test("sidebar notes require a bound viewer and validate requests before calling the runtime", async () => {
     const port = await getFreePort();
     const auth = "test-token-sidebar-notes";
@@ -5034,7 +5089,7 @@ describe("mobile session bootstrap (POST /api/mobile/session/bootstrap)", () => 
           { id: "default", name: "Default", color: "#fff", workspaceIds: [] },
           { id: "other", name: "Other", color: "#000", workspaceIds: [] },
         ],
-        workspaces: [],
+        workspaces: [] as Array<Record<string, unknown>>,
         windowSlots: [],
       },
     };
@@ -5117,6 +5172,187 @@ describe("mobile session bootstrap (POST /api/mobile/session/bootstrap)", () => 
       });
       expect(removed.status).toBe(200);
       expect(deleteAutomationRuns).toHaveBeenCalledWith(deleteInput, expect.stringMatching(/^remote:/u));
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("paired phones read a sanitized multi-account usage projection", async () => {
+    const port = await getFreePort();
+    const runtime = makeMobileRuntime(port, () => ({
+      deviceId: "dev-usage",
+      pairId: "pair-usage",
+      profileId: "default",
+      allowedOrigin: "https://example.trycloudflare.com",
+      transport: "legacy" as const,
+      requiredCapability: "remote.webSession" as const,
+      expiresAt: Date.now() + 60_000,
+    }));
+    runtime
+      .getPayload()
+      .appState.workspaces.push({ id: "ws-default", profileId: "default" }, { id: "ws-other", profileId: "other" });
+    const readAgentUsage = vi.fn(async () => [
+      {
+        provider: "claude",
+        checkedAt: 1000,
+        account: { label: "active@example.test", key: "host-secret-account-key" },
+        windows: [{ label: "5-hour", usedPercent: 30, durationMinutes: 300 }],
+        otherAccounts: [
+          { id: "profile-internal-id", label: "other@example.test", status: "separate-login", windows: [] },
+          {
+            id: "unknown-profile-id",
+            label: `${"C:\\private\\"}${"x".repeat(100)} · account identity unknown`,
+            status: "separate-login",
+            identityUnknown: true,
+          },
+          { id: "candidate-internal-id", label: "C:\\private\\candidate", status: "candidate" },
+          { id: "default-duplicate-id", label: "active@example.test", status: "separate-login", sameAsDefault: true },
+        ],
+      },
+      {
+        provider: "gemini",
+        checkedAt: 2000,
+        windows: [],
+        unavailable: "host detail with an internal path",
+        otherAccounts: [{ id: "gemini-internal-id", label: "gemini@example.test", status: "listed" }],
+      },
+    ]);
+    Object.assign(runtime, {
+      readAgentUsage,
+      isMobileSessionStillAuthorized: () => true,
+      getMobileAttachmentContext: () => ({
+        desktopDeviceId: "desktop",
+        privateKey: {} as never,
+        device: {
+          publicKey: "",
+          pairId: "pair-usage",
+          sessionKeyVersion: 1,
+          capabilities: ["remote.webSession", "status.read"],
+          profileAllowlist: ["default"],
+        },
+      }),
+    });
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    const base = `http://127.0.0.1:${port}`;
+    try {
+      const bootstrap = await fetch(`${base}/api/mobile/session/bootstrap`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticketId: "ticket", secret: "secret" }),
+      });
+      const cookie = (bootstrap.headers.get("set-cookie") || "").split(";")[0]!;
+      const response = await fetch(`${base}/api/agent-usage/read`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Cookie: cookie },
+        body: JSON.stringify({ sessionId: "ws-default:panel-1" }),
+      });
+      expect(response.status).toBe(200);
+      const payload = await response.json();
+      expect(payload).toMatchObject([
+        {
+          provider: "claude",
+          account: { label: "active@example.test", key: "mobile-claude-active" },
+          otherAccounts: [{ id: "claude-other-0", label: "other@example.test", status: "separate-login" }],
+        },
+        {
+          provider: "gemini",
+          unavailable: "Open /model or /stats model in Gemini CLI to check quota for this account.",
+          otherAccounts: [{ id: "gemini-other-0", label: "gemini@example.test", status: "listed" }],
+        },
+      ]);
+      const serialized = JSON.stringify(payload);
+      for (const forbidden of [
+        "host-secret-account-key",
+        "profile-internal-id",
+        "candidate-internal-id",
+        "unknown-profile-id",
+        "default-duplicate-id",
+        "gemini-internal-id",
+        "C:\\private\\",
+        "identity unknown",
+        "removable",
+      ]) {
+        expect(serialized).not.toContain(forbidden);
+      }
+      expect(readAgentUsage).toHaveBeenCalledWith("ws-default:panel-1", false);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("provider usage route denies another profile and a phone whose authorization changed", async () => {
+    const port = await getFreePort();
+    const runtime = makeMobileRuntime(port, () => ({
+      deviceId: "dev-usage",
+      pairId: "pair-usage",
+      profileId: "default",
+      allowedOrigin: "https://example.trycloudflare.com",
+      transport: "legacy" as const,
+      requiredCapability: "remote.webSession" as const,
+      expiresAt: Date.now() + 60_000,
+    }));
+    runtime
+      .getPayload()
+      .appState.workspaces.push({ id: "ws-default", profileId: "default" }, { id: "ws-other", profileId: "other" });
+    const readAgentUsage = vi.fn(async () => []);
+    let authorized = true;
+    Object.assign(runtime, {
+      readAgentUsage,
+      isMobileSessionStillAuthorized: () => authorized,
+      getMobileAttachmentContext: () => ({
+        desktopDeviceId: "desktop",
+        privateKey: {} as never,
+        device: {
+          publicKey: "",
+          pairId: "pair-usage",
+          sessionKeyVersion: 1,
+          capabilities: ["remote.webSession", "status.read"],
+          profileAllowlist: ["default"],
+        },
+      }),
+    });
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    const base = `http://127.0.0.1:${port}`;
+    try {
+      const bootstrap = await fetch(`${base}/api/mobile/session/bootstrap`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticketId: "ticket", secret: "secret" }),
+      });
+      const cookie = (bootstrap.headers.get("set-cookie") || "").split(";")[0]!;
+      const malformed = await fetch(`${base}/api/agent-usage/read`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Cookie: cookie },
+        body: "null",
+      });
+      expect(malformed.status).toBe(400);
+
+      const outsideProfile = await fetch(`${base}/api/agent-usage/read`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Cookie: cookie },
+        body: JSON.stringify({ sessionId: "ws-other:panel-1" }),
+      });
+      expect(outsideProfile.status).toBe(403);
+      expect(await outsideProfile.json()).toMatchObject({ reason: "target-outside-profile" });
+      expect(readAgentUsage).not.toHaveBeenCalled();
+
+      readAgentUsage.mockImplementationOnce(async () => {
+        authorized = false;
+        return [];
+      });
+      const revokedDuringRead = await fetch(`${base}/api/agent-usage/read`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Cookie: cookie },
+        body: JSON.stringify({}),
+      });
+      expect(revokedDuringRead.status).toBe(403);
+      expect(await revokedDuringRead.json()).toMatchObject({ reason: "profile-authorization-changed" });
     } finally {
       await server.close();
     }

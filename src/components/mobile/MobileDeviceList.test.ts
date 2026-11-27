@@ -126,7 +126,7 @@ describe("MobileDeviceList", () => {
 
   it("runs rename, pause, access, test push, and revoke through app actions", async () => {
     const app = useAppStore();
-    app.mobileDevices = [phone];
+    app.mobileDevices = [{ ...phone, capabilities: ["task.control", "status.read"] }];
     vi.spyOn(app, "refreshMobileDevices").mockResolvedValue();
     const rename = vi.spyOn(app, "renameMobileDevice").mockResolvedValue();
     const pause = vi.spyOn(app, "setMobileDeviceRemoteUiPaused").mockResolvedValue();
@@ -257,7 +257,7 @@ describe("MobileDeviceList", () => {
 
   it("shows access synchronization as pending and locks the editor until it finishes", async () => {
     const app = useAppStore();
-    app.mobileDevices = [phone];
+    app.mobileDevices = [{ ...phone, capabilities: ["task.control", "status.read"] }];
     vi.spyOn(app, "refreshMobileDevices").mockResolvedValue();
     const request = deferred();
     vi.spyOn(app, "updateMobileDeviceAllowlist").mockReturnValue(request.promise);

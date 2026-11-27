@@ -355,7 +355,11 @@ export function renameDevice(devices: MobileDeviceRecord[], deviceId: string, la
 export function updateAllowlist(
   devices: MobileDeviceRecord[],
   deviceId: string,
-  update: { capabilities?: Capability[]; profileAllowlist?: string[]; excludedProfileIds?: string[] },
+  update: {
+    capabilities?: Capability[];
+    profileAllowlist?: string[];
+    excludedProfileIds?: string[];
+  },
 ): MobileDeviceRecord[] {
   return devices.map((d) =>
     d.deviceId === deviceId
@@ -468,7 +472,11 @@ export function createMobileDeviceStore(deps: MobileDeviceStoreDeps) {
     },
     async updateAllowlist(
       deviceId: string,
-      update: { capabilities?: Capability[]; profileAllowlist?: string[]; excludedProfileIds?: string[] },
+      update: {
+        capabilities?: Capability[];
+        profileAllowlist?: string[];
+        excludedProfileIds?: string[];
+      },
     ): Promise<void> {
       await deps.mutateDevices((devices) => updateAllowlist(devices, deviceId, update));
     },

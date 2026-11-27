@@ -4,7 +4,10 @@
       v-if="notifStore.pinned || notifStore.panelOpen"
       ref="panelRef"
       class="notification-center"
-      :class="{ 'notification-center--pinned': notifStore.pinned }"
+      :class="{
+        'notification-center--pinned': notifStore.pinned,
+        'notification-center--paired-usage': isPairedUsage,
+      }"
       tabindex="0"
       @click.stop
       @keydown="onKeydown"
@@ -42,22 +45,7 @@
             title="Attachments — files shared by every tab in the active workspace."
             @click="activeTab = 'attachments'"
           >
-            <span class="notification-center__tab-icon" aria-hidden="true">
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              >
-                <path
-                  d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"
-                />
-              </svg>
-            </span>
+            <span class="notification-center__tab-icon" aria-hidden="true"><Paperclip :size="15" /></span>
             <span class="notification-center__tab-label">Attachments</span>
           </button>
           <button
@@ -67,21 +55,7 @@
             title="Telegram and paired phone connections, including access and session status."
             @click="activeTab = 'telegram'"
           >
-            <span class="notification-center__tab-icon" aria-hidden="true">
-              <svg
-                width="15"
-                height="15"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              >
-                <rect x="6" y="2" width="12" height="20" rx="2" />
-                <path d="M11 18h2" />
-              </svg>
-            </span>
+            <span class="notification-center__tab-icon" aria-hidden="true"><Smartphone :size="15" /></span>
             <span class="notification-center__tab-label">Connections</span>
           </button>
           <button
@@ -91,7 +65,7 @@
             title="Agents — every agent currently working in this profile, with how long it has been running. Click a row to open it."
             @click="activeTab = 'agents'"
           >
-            <span class="notification-center__tab-icon" aria-hidden="true">🤖</span>
+            <span class="notification-center__tab-icon" aria-hidden="true"><Bot :size="15" /></span>
             <span class="notification-center__tab-label">Agents</span>
             <span
               v-if="runningAgents.length > 0"
@@ -112,7 +86,7 @@
               class="notification-center__tab-icon notification-center__automation-icon"
               :class="automationIconClass"
               aria-hidden="true"
-              ><AutomationIcon
+              ><Cog :size="15"
             /></span>
             <span class="notification-center__tab-label">Automations</span>
             <span
@@ -139,7 +113,7 @@
             title="Approvals — the permission prompts strIDEterm answered for you in this profile, newest first. Click a row for the full command."
             @click="activeTab = 'approvals'"
           >
-            <span class="notification-center__tab-icon" aria-hidden="true">🛡️</span>
+            <span class="notification-center__tab-icon" aria-hidden="true"><ShieldCheck :size="15" /></span>
             <span class="notification-center__tab-label">Approvals</span>
           </button>
           <button
@@ -149,7 +123,7 @@
             :title="performanceTabTitle"
             @click="activeTab = 'performance'"
           >
-            <span class="notification-center__tab-icon" aria-hidden="true">📈</span>
+            <span class="notification-center__tab-icon" aria-hidden="true"><Activity :size="15" /></span>
             <span class="notification-center__tab-label">Performance</span>
           </button>
           <button
@@ -160,23 +134,20 @@
             title="Notes — for the active tab, the selected workspace, and notes shared by all workspaces in this profile."
             @click="activeTab = 'notes'"
           >
-            <span class="notification-center__tab-icon" aria-hidden="true">
-              <svg
-                width="15"
-                height="15"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              >
-                <path d="M8 2v4M12 2v4M16 2v4" />
-                <rect x="4" y="4" width="16" height="18" rx="2" />
-                <path d="M8 10h6M8 14h8M8 18h5" />
-              </svg>
-            </span>
+            <span class="notification-center__tab-icon" aria-hidden="true"><NotebookPen :size="15" /></span>
             <span class="notification-center__tab-label">Notes</span>
+          </button>
+          <button
+            v-if="showUsageTab"
+            type="button"
+            class="notification-center__tab"
+            :class="{ 'notification-center__tab--active': activeTab === 'usage' }"
+            aria-label="Usage"
+            title="Account limits, usage pace, and time to reset"
+            @click="activeTab = 'usage'"
+          >
+            <span class="notification-center__tab-icon" aria-hidden="true"><Gauge :size="15" /></span>
+            <span class="notification-center__tab-label">Usage</span>
           </button>
         </div>
         <!-- Very-narrow fallback: below the icon-tab threshold even the icons
@@ -212,7 +183,7 @@
                 class="notification-center__automation-icon"
                 :class="automationIconClass"
                 aria-hidden="true"
-                ><AutomationIcon
+                ><Cog :size="15"
               /></span>
               <span
                 v-if="appStore.payload?.automations?.paused"
@@ -239,7 +210,13 @@
               :class="{ 'notification-center__tabmenu-item--active': activeTab === t.id }"
               @click="selectTab(t.id)"
             >
-              <span>{{ t.label }}</span>
+              <span class="notification-center__tabmenu-name">
+                <span class="notification-center__tabmenu-icon" aria-hidden="true">
+                  <component :is="t.icon" v-if="t.icon" :size="15" />
+                  <template v-else>🔔</template>
+                </span>
+                {{ t.label }}
+              </span>
               <span v-if="t.id === 'alerts' && profileUnreadCount > 0" class="notification-center__title-badge">{{
                 profileUnreadCount > 99 ? "99+" : profileUnreadCount
               }}</span>
@@ -254,7 +231,7 @@
                   class="notification-center__automation-icon"
                   :class="automationIconClass"
                   aria-hidden="true"
-                  ><AutomationIcon
+                  ><Cog :size="15"
                 /></span>
                 <span
                   v-if="appStore.payload?.automations?.paused"
@@ -847,6 +824,21 @@
       <div v-if="activeTab === 'performance'" class="notification-center__body notification-center__body--perf">
         <PerformancePanel />
       </div>
+      <div
+        v-if="activeTab === 'usage' && showUsageTab"
+        class="notification-center__body notification-center__body--usage"
+      >
+        <label class="notification-center__usage-pin">
+          <input
+            class="notification-center__usage-pin-checkbox"
+            type="checkbox"
+            :checked="usageStatusBarVisible"
+            @change="emit('usage-status-bar-visibility', ($event.target as HTMLInputElement).checked)"
+          />
+          Pin usage to bottom bar
+        </label>
+        <AgentUsagePanel />
+      </div>
       <div v-if="activeTab === 'notes'" ref="notesHost" class="notification-center__body--notes"></div>
     </aside>
   </Transition>
@@ -860,7 +852,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, inject, onMounted, onUnmounted, nextTick, watch } from "vue";
+import { ref, computed, inject, onMounted, onUnmounted, nextTick, watch, type Component } from "vue";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { useAppStore } from "../../stores/app.js";
 import { useNotificationProfileScope } from "../../composables/useNotificationProfileScope.js";
@@ -874,10 +866,11 @@ import {
 import type { StatePayload, WorkspaceState } from "../../../electron/shared/types/state.js";
 import type { OperationFinished } from "../../../electron/shared/operation-events.js";
 import PerformancePanel from "./PerformancePanel.vue";
+import AgentUsagePanel from "./AgentUsagePanel.vue";
 import SidebarNotesPanel from "./SidebarNotesPanel.vue";
 import ApprovalsPanel from "./ApprovalsPanel.vue";
 import AutomationsPanel from "./AutomationsPanel.vue";
-import AutomationIcon from "../common/AutomationIcon.vue";
+import { Activity, Bot, Cog, Gauge, NotebookPen, Paperclip, ShieldCheck, Smartphone } from "@lucide/vue";
 import SandboxRequestList from "./SandboxRequestList.vue";
 import ReviewTrustActions from "./ReviewTrustActions.vue";
 import { useSandboxRequestsStore } from "../../stores/sandbox-requests.js";
@@ -919,6 +912,9 @@ interface NotificationSession {
 const notifStore = useNotificationStore();
 const appStore = useAppStore();
 const sandboxRequests = useSandboxRequestsStore();
+const props = defineProps<{ usageStatusBarVisible?: boolean }>();
+const emit = defineEmits<{ "usage-status-bar-visibility": [value: boolean] }>();
+const usageStatusBarVisible = computed(() => props.usageStatusBarVisible ?? false);
 const { sessionInActiveProfile, activeProfileId } = useNotificationProfileScope();
 const copiedPathId = ref("");
 const profileUnreadCount = computed(() => notifStore.unreadCountFor(sessionInActiveProfile));
@@ -934,7 +930,8 @@ function clearAllInProfile(): void {
 const bodyRef = ref<HTMLElement | null>(null);
 const panelRef = ref<HTMLElement | null>(null);
 const selectedIndex = ref(0);
-type TabId = "alerts" | "attachments" | "agents" | "automations" | "telegram" | "approvals" | "performance" | "notes";
+type TabId =
+  "alerts" | "attachments" | "agents" | "automations" | "telegram" | "approvals" | "performance" | "notes" | "usage";
 const activeTab = ref<TabId>("alerts");
 const notesHost = ref<HTMLElement | null>(null);
 const alertNotesHost = ref<HTMLElement | null>(null);
@@ -1062,6 +1059,10 @@ const activeWorkspaceAttachmentsReason = computed(() => {
 // process metrics do — the panel drops those sections by itself when the
 // transport can't provide them, which is what this flag describes.
 const hasProcessMetrics = computed(() => appStore.supportsPerformanceMetrics);
+const showUsageTab = computed(() => {
+  const transport = api ?? appStore.getApi?.();
+  return typeof transport?.readAgentUsage === "function";
+});
 const performanceTabTitle = computed(() =>
   hasProcessMetrics.value
     ? "Live CPU / memory of the Electron processes and this window's terminal rendering activity. Diagnostics only run while this tab is open."
@@ -1072,6 +1073,9 @@ const performanceTabTitle = computed(() =>
 // second WebSocket on the remote client. Only the Approvals list uses it: it
 // reads the audit log and deletes from it.
 const api = inject<Transport>(apiKey) ?? null;
+const isPairedUsage = computed(
+  () => activeTab.value === "usage" && Boolean(api?.isRemote || appStore.isRemoteTransport),
+);
 const jiraLinkRoutes = useJiraIssueLinkRoutes(api || appStore.getApi(), activeProfileId);
 const reviewAction = usePullRequestReviewAction();
 
@@ -1152,16 +1156,21 @@ async function probeApprovalCount(): Promise<void> {
 // away just like the panel itself.
 const tabMenuOpen = ref(false);
 const tabMenuRef = ref<HTMLElement | null>(null);
-const menuTabs = computed<{ id: TabId; label: string }[]>(() => {
-  const tabs: { id: TabId; label: string }[] = [
+type MenuTab = { id: TabId; label: string; icon?: Component };
+const menuTabs = computed<MenuTab[]>(() => {
+  const tabs: MenuTab[] = [
     { id: "alerts", label: "Alerts" },
-    { id: "attachments", label: "Attachments" },
-    { id: "agents", label: "Agents" },
-    { id: "automations", label: "Automations" },
-    { id: "telegram", label: "Connections" },
+    { id: "attachments", label: "Attachments", icon: Paperclip },
+    { id: "agents", label: "Agents", icon: Bot },
+    { id: "automations", label: "Automations", icon: Cog },
+    { id: "telegram", label: "Connections", icon: Smartphone },
   ];
-  if (showApprovals.value) tabs.push({ id: "approvals", label: "Approvals" });
-  tabs.push({ id: "performance", label: "Performance" }, { id: "notes", label: "Notes" });
+  if (showApprovals.value) tabs.push({ id: "approvals", label: "Approvals", icon: ShieldCheck });
+  tabs.push(
+    { id: "performance", label: "Performance", icon: Activity },
+    { id: "notes", label: "Notes", icon: NotebookPen },
+  );
+  if (showUsageTab.value) tabs.push({ id: "usage", label: "Usage", icon: Gauge });
   return tabs;
 });
 const activeTabLabel = computed(() => menuTabs.value.find((t) => t.id === activeTab.value)?.label ?? "Alerts");

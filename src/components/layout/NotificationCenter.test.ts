@@ -14,6 +14,7 @@ import { projectPresentedForest } from "../../app/sidebar-presented-rows.js";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { useAppStore } from "../../stores/app.js";
 import { apiKey } from "../../types/keys.js";
+import { windowBackend } from "../../window-backend.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
@@ -1037,6 +1038,172 @@ describe("NotificationCenter — Performance tab availability", () => {
     expect(wrapper.findAll(".notification-center__tabmenu-item").some((b) => b.text().includes("Performance"))).toBe(
       true,
     );
+  });
+});
+
+describe("NotificationCenter — Usage tab availability", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    window.localStorage.removeItem("strideterm-notifications-v2");
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "slot1" } };
+    windowBackend.value = { kind: "local" };
+  });
+
+  it("shows Usage on the local desktop when the transport exposes readAgentUsage, including the compact menu", async () => {
+    const appStore = useAppStore();
+    appStore.payload = makePayload() as AnyApi;
+    const readAgentUsage = vi.fn().mockResolvedValue([]);
+    appStore.getApi = (() => ({ isRemote: false, readAgentUsage })) as AnyApi;
+    useNotificationStore().panelOpen = true;
+
+    const wrapper = mount(NotificationCenter);
+    await flushPromises();
+    appStore.activeSessionId = "session-old";
+    expect(wrapper.findAll(".notification-center__tab").some((tab) => tab.text().includes("Usage"))).toBe(true);
+    await wrapper
+      .findAll(".notification-center__tab")
+      .find((tab) => tab.text().includes("Usage"))!
+      .trigger("click");
+    await flushPromises();
+    expect(wrapper.findAll(".notification-center__body--usage")).toHaveLength(1);
+    expect(readAgentUsage).toHaveBeenNthCalledWith(1, "session-old");
+    appStore.activeSessionId = "session-new";
+    await flushPromises();
+    expect(readAgentUsage).toHaveBeenNthCalledWith(2, "session-new");
+    expect(readAgentUsage).toHaveBeenCalledTimes(2);
+    await wrapper.get(".notification-center__tabmenu-toggle").trigger("click");
+    expect(wrapper.findAll(".notification-center__tabmenu-item").some((item) => item.text().includes("Usage"))).toBe(
+      true,
+    );
+    wrapper.unmount();
+  });
+
+  it("scopes paired landscape styling to the active Usage tab", async () => {
+    const appStore = useAppStore();
+    appStore.payload = makePayload() as AnyApi;
+    appStore.isRemoteTransport = true;
+    appStore.getApi = (() => ({ isRemote: true, readAgentUsage: vi.fn().mockResolvedValue([]) })) as AnyApi;
+    useNotificationStore().panelOpen = true;
+
+    const wrapper = mount(NotificationCenter);
+    await flushPromises();
+    await wrapper
+      .findAll(".notification-center__tab")
+      .find((tab) => tab.text().includes("Usage"))!
+      .trigger("click");
+    expect(wrapper.get(".notification-center").classes()).toContain("notification-center--paired-usage");
+
+    await wrapper
+      .findAll(".notification-center__tab")
+      .find((tab) => tab.text().includes("Performance"))!
+      .trigger("click");
+    expect(wrapper.get(".notification-center").classes()).not.toContain("notification-center--paired-usage");
+    wrapper.unmount();
+  });
+
+  it("routes Usage navigation from another tab through the notification store and focuses the dock", async () => {
+    const appStore = useAppStore();
+    appStore.payload = makePayload() as AnyApi;
+    appStore.getApi = (() => ({ isRemote: false, readAgentUsage: vi.fn().mockResolvedValue([]) })) as AnyApi;
+    const notifications = useNotificationStore();
+    notifications.panelOpen = true;
+    const wrapper = mount(NotificationCenter, { attachTo: document.body });
+    await nextTick();
+
+    await wrapper
+      .findAll(".notification-center__tab")
+      .find((tab) => tab.text().includes("Performance"))!
+      .trigger("click");
+    notifications.closePanel();
+    await nextTick();
+    notifications.openPanelOnTab("usage");
+    notifications.requestFocus();
+    await flushPromises();
+
+    expect(notifications.panelOpen).toBe(true);
+    expect(wrapper.findAll(".notification-center__body--usage")).toHaveLength(1);
+    expect(document.activeElement).toBe(wrapper.get(".notification-center").element);
+
+    wrapper.unmount();
+  });
+
+  it("emits the bottom bar pin preference from its Usage control", async () => {
+    const appStore = useAppStore();
+    appStore.payload = makePayload() as AnyApi;
+    appStore.getApi = (() => ({ isRemote: false, readAgentUsage: vi.fn().mockResolvedValue([]) })) as AnyApi;
+    const wrapper = mount(NotificationCenter, { props: { usageStatusBarVisible: false } });
+    useNotificationStore().panelOpen = true;
+    await nextTick();
+    await wrapper
+      .findAll(".notification-center__tab")
+      .find((tab) => tab.text().includes("Usage"))!
+      .trigger("click");
+    await nextTick();
+    await wrapper.get(".notification-center__usage-pin input").setValue(true);
+    await wrapper.get(".notification-center__usage-pin input").setValue(false);
+
+    expect(wrapper.emitted("usage-status-bar-visibility")).toEqual([[true], [false]]);
+    wrapper.unmount();
+  });
+
+  it.each([
+    ["an old transport", false, undefined],
+    ["a remote transport without the method", true, undefined],
+  ])("hides Usage for %s", async (_description, isRemote, readAgentUsage) => {
+    const appStore = useAppStore();
+    appStore.payload = makePayload() as AnyApi;
+    appStore.getApi = (() => ({ isRemote, readAgentUsage })) as AnyApi;
+    appStore.isRemoteTransport = isRemote as boolean;
+    useNotificationStore().panelOpen = true;
+    const wrapper = mount(NotificationCenter);
+    await nextTick();
+    expect(wrapper.findAll(".notification-center__tab").some((tab) => tab.text().includes("Usage"))).toBe(false);
+    await wrapper.get(".notification-center__tabmenu-toggle").trigger("click");
+    expect(wrapper.findAll(".notification-center__tabmenu-item").some((item) => item.text().includes("Usage"))).toBe(
+      false,
+    );
+    wrapper.unmount();
+  });
+
+  it("shows read-only Usage for a paired mobile transport and supports notification navigation", async () => {
+    const appStore = useAppStore();
+    appStore.payload = makePayload() as AnyApi;
+    appStore.isRemoteTransport = true;
+    const readAgentUsage = vi.fn().mockResolvedValue([]);
+    appStore.getApi = (() => ({ isRemote: true, readAgentUsage })) as AnyApi;
+    const notifications = useNotificationStore();
+    const wrapper = mount(NotificationCenter, { attachTo: document.body });
+    await flushPromises();
+    appStore.activeSessionId = "phone-session";
+    await flushPromises();
+
+    expect(wrapper.findAll(".notification-center__tab").some((tab) => tab.text().includes("Usage"))).toBe(true);
+    notifications.openPanelOnTab("usage");
+    await flushPromises();
+    expect(wrapper.findAll(".notification-center__body--usage")).toHaveLength(1);
+    expect(wrapper.find(".notification-center__usage-pin").exists()).toBe(true);
+
+    wrapper.unmount();
+  });
+
+  it("shows Usage for a paired desktop window when the transport exposes readAgentUsage", async () => {
+    const appStore = useAppStore();
+    appStore.payload = makePayload() as AnyApi;
+    appStore.isRemoteTransport = true;
+    appStore.getApi = (() => ({ isRemote: true, readAgentUsage: vi.fn() })) as AnyApi;
+    windowBackend.value = {
+      kind: "peer",
+      hostId: "host-12345678",
+      hostLabel: "Paired desktop",
+      remoteProfileId: "profile-1",
+      clientId: "client-12345678",
+      terminalFontSize: 14,
+    };
+    useNotificationStore().panelOpen = true;
+    const wrapper = mount(NotificationCenter);
+    await nextTick();
+    expect(wrapper.findAll(".notification-center__tab").some((tab) => tab.text().includes("Usage"))).toBe(true);
+    wrapper.unmount();
   });
 });
 
